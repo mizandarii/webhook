@@ -19,29 +19,43 @@ app.post("/webhook", express.raw({ type: "application/json" }), async (req, res)
 
     console.log("Payment received");
 
-    // 🔥 1. берём payment link из Stripe session
-    const paymentLink = session.payment_link;
+    // ⚠️ иногда payment_link тут отсутствует — fallback
+    const paymentLink =
+      session.payment_link ||
+      session.metadata?.payment_link;
 
     if (!paymentLink) {
-      console.log("No payment link found");
+      console.log("No payment link found in session");
       return res.json({ received: true });
     }
 
-    // 🔥 2. ищем booking в PocketBase
-    const response = await fetch(
-      `${process.env.PB_URL}/api/collections/bookings/records?filter=(payment_link='${paymentLink}')`
+    // 🔥 1. найти service по payment_link
+    const serviceRes = await fetch(
+      `${process.env.PB_URL}/api/collections/services/records?filter=(stripe_payment_link='${paymentLink}')`
     );
 
-    const data = await response.json();
+    const serviceData = await serviceRes.json();
+    const service = serviceData.items?.[0];
 
-    if (!data.items || data.items.length === 0) {
+    if (!service) {
+      console.log("Service not found");
+      return res.json({ received: true });
+    }
+
+    // 🔥 2. найти booking по service relation
+    const bookingRes = await fetch(
+      `${process.env.PB_URL}/api/collections/bookings/records?filter=(service='${service.id}'&&status='pending')`
+    );
+
+    const bookingData = await bookingRes.json();
+    const booking = bookingData.items?.[0];
+
+    if (!booking) {
       console.log("Booking not found");
       return res.json({ received: true });
     }
 
-    const booking = data.items[0];
-
-    // 🔥 3. обновляем статус
+    // 🔥 3. обновить статус
     await fetch(
       `${process.env.PB_URL}/api/collections/bookings/records/${booking.id}`,
       {
