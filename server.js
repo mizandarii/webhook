@@ -1,11 +1,3 @@
-import express from "express";
-import Stripe from "stripe";
-import fetch from "node-fetch";
-
-const app = express();
-
-const stripe = new Stripe(process.env.STRIPE_SECRET);
-
 app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
 
@@ -18,30 +10,53 @@ app.post("/webhook", express.raw({ type: "application/json" }), async (req, res)
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.log("Webhook error:", err.message);
-    return res.status(400).send(`Webhook Error`);
+    console.log("Webhook signature error:", err.message);
+    return res.status(400).send("Invalid signature");
   }
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
 
-    const bookingId = session.client_reference_id;
+    console.log("Payment received");
 
-    console.log("PAID:", bookingId);
+    // 🔥 1. берём payment link из Stripe session
+    const paymentLink = session.payment_link;
 
-    // обновляем PocketBase
-    await fetch(`${process.env.PB_URL}/api/collections/bookings/records/${bookingId}`, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        status: "paid"
-      })
-    });
+    if (!paymentLink) {
+      console.log("No payment link found");
+      return res.json({ received: true });
+    }
+
+    // 🔥 2. ищем booking в PocketBase
+    const response = await fetch(
+      `${process.env.PB_URL}/api/collections/bookings/records?filter=(payment_link='${paymentLink}')`
+    );
+
+    const data = await response.json();
+
+    if (!data.items || data.items.length === 0) {
+      console.log("Booking not found");
+      return res.json({ received: true });
+    }
+
+    const booking = data.items[0];
+
+    // 🔥 3. обновляем статус
+    await fetch(
+      `${process.env.PB_URL}/api/collections/bookings/records/${booking.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          status: "paid"
+        })
+      }
+    );
+
+    console.log("Booking updated:", booking.id);
   }
 
   res.json({ received: true });
 });
-
-app.listen(3000, () => console.log("Webhook server running"));
